@@ -1,0 +1,803 @@
+{
+    "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "factoryName": {
+            "type": "string",
+            "metadata": "Data Factory name",
+            "defaultValue": "-adf"
+        },
+        "ls_databricks_accessToken": {
+            "type": "secureString",
+            "metadata": "Secure string for 'accessToken' of 'ls_databricks'"
+        },
+        "ls__storage_properties_typeProperties_url": {
+            "type": "string",
+            "defaultValue": "https://ucstoragedl.dfs.core.windows.net/"
+        },
+        "ls_databricks_properties_typeProperties_existingClusterId": {
+            "type": "string",
+            "defaultValue": "0904-170858-msprzh46"
+        },
+        "tr_process_data_properties_pipeline_parameters_p_month_end_date": {
+            "type": "string",
+            "defaultValue": "@trigger().outputs.windowStartTime"
+        }
+    },
+    "variables": {
+        "factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+    },
+    "resources": [
+        {
+            "name": "[concat(parameters('factoryName'), '/ds__bronze_full')]",
+            "type": "Microsoft.DataFactory/factories/datasets",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "linkedServiceName": {
+                    "referenceName": "ls__storage",
+                    "type": "LinkedServiceReference"
+                },
+                "annotations": [],
+                "type": "Json",
+                "typeProperties": {
+                    "location": {
+                        "type": "AzureBlobFSLocation",
+                        "fileSystem": "bronze"
+                    }
+                },
+                "schema": {}
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/ls__storage')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/ds__bronze_incremental')]",
+            "type": "Microsoft.DataFactory/factories/datasets",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "linkedServiceName": {
+                    "referenceName": "ls__storage",
+                    "type": "LinkedServiceReference"
+                },
+                "parameters": {
+                    "p_month_end_date": {
+                        "type": "string"
+                    }
+                },
+                "annotations": [],
+                "type": "Json",
+                "typeProperties": {
+                    "location": {
+                        "type": "AzureBlobFSLocation",
+                        "folderPath": {
+                            "value": "@formatDateTime(dataset().p_month_end_date,'yyyy-MM-dd')",
+                            "type": "Expression"
+                        },
+                        "fileSystem": "bronze"
+                    }
+                },
+                "schema": {}
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/ls__storage')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/ls__storage')]",
+            "type": "Microsoft.DataFactory/factories/linkedServices",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "description": "This is the linked service use to connect to data lake ucstoragedl",
+                "annotations": [],
+                "type": "AzureBlobFS",
+                "typeProperties": {
+                    "url": "[parameters('ls__storage_properties_typeProperties_url')]"
+                }
+            },
+            "dependsOn": []
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/ls_databricks')]",
+            "type": "Microsoft.DataFactory/factories/linkedServices",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "annotations": [],
+                "type": "AzureDatabricks",
+                "typeProperties": {
+                    "domain": "https://adb-285250336183891.11.azuredatabricks.net",
+                    "accessToken": {
+                        "type": "SecureString",
+                        "value": "[parameters('ls_databricks_accessToken')]"
+                    },
+                    "existingClusterId": "[parameters('ls_databricks_properties_typeProperties_existingClusterId')]"
+                }
+            },
+            "dependsOn": []
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/tr_process_data')]",
+            "type": "Microsoft.DataFactory/factories/triggers",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "annotations": [],
+                "runtimeState": "Started",
+                "pipeline": {
+                    "pipelineReference": {
+                        "referenceName": "pl_process_medallion_data",
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {
+                        "p_month_end_date": "[parameters('tr_process_data_properties_pipeline_parameters_p_month_end_date')]"
+                    }
+                },
+                "type": "TumblingWindowTrigger",
+                "typeProperties": {
+                    "frequency": "Month",
+                    "interval": 1,
+                    "startTime": "2023-02-01T22:00:00Z",
+                    "endTime": "2023-06-01T22:00:00Z",
+                    "delay": "00:00:00",
+                    "maxConcurrency": 1,
+                    "retryPolicy": {
+                        "intervalInSeconds": 30
+                    },
+                    "dependsOn": []
+                }
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/pipelines/pl_process_medallion_data')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/pl_full_load_bronze_silver_tables')]",
+            "type": "Microsoft.DataFactory/factories/pipelines",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "activities": [
+                    {
+                        "name": "Get Folder Details",
+                        "type": "GetMetadata",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "dataset": {
+                                "referenceName": "ds__bronze_full",
+                                "type": "DatasetReference",
+                                "parameters": {}
+                            },
+                            "fieldList": [
+                                "childItems",
+                                "exists"
+                            ],
+                            "storeSettings": {
+                                "type": "AzureBlobFSReadSettings",
+                                "recursive": true,
+                                "enablePartitionDiscovery": false
+                            },
+                            "formatSettings": {
+                                "type": "JsonReadSettings"
+                            }
+                        }
+                    },
+                    {
+                        "name": "Files Existsed",
+                        "type": "IfCondition",
+                        "dependsOn": [
+                            {
+                                "activity": "Get Folder Details",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "userProperties": [],
+                        "typeProperties": {
+                            "expression": {
+                                "value": "@activity('Get Folder Details').output.exists",
+                                "type": "Expression"
+                            },
+                            "ifTrueActivities": [
+                                {
+                                    "name": "Filter CSV Files",
+                                    "description": "Get CSV File Names",
+                                    "type": "Filter",
+                                    "dependsOn": [],
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "items": {
+                                            "value": "@activity('Get Folder Details').output.childItems",
+                                            "type": "Expression"
+                                        },
+                                        "condition": {
+                                            "value": "@endswith(item().name, '.csv')",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Number of CSV Files is 3",
+                        "type": "IfCondition",
+                        "dependsOn": [
+                            {
+                                "activity": "Files Existsed",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "userProperties": [],
+                        "typeProperties": {
+                            "expression": {
+                                "value": "@equals(activity('Filter CSV Files').output.FilteredItemsCount,3)",
+                                "type": "Expression"
+                            },
+                            "ifTrueActivities": [
+                                {
+                                    "name": "Create Bronze Table Full Load Objects",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/full_load_objects/0.create_bronze_tables"
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create Silver Table Account",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [
+                                        {
+                                            "activity": "Create Bronze Table Full Load Objects",
+                                            "dependencyConditions": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    ],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/full_load_objects/1.create_silver_table_account"
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create Silver Table Quote",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [
+                                        {
+                                            "activity": "Create Bronze Table Full Load Objects",
+                                            "dependencyConditions": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    ],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/full_load_objects/3.create_silver_table_quote"
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create Silver Table Project",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [
+                                        {
+                                            "activity": "Create Bronze Table Full Load Objects",
+                                            "dependencyConditions": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    ],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/full_load_objects/2.create_silver_table_project"
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "policy": {
+                    "elapsedTimeMetric": {}
+                },
+                "parameters": {
+                    "p_month_end_date": {
+                        "type": "string"
+                    }
+                },
+                "annotations": [],
+                "lastPublishTime": "2024-09-10T23:03:21Z"
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/datasets/ds__bronze_full')]",
+                "[concat(variables('factoryId'), '/linkedServices/ls_databricks')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/pl_incremental_load_bronze_silver_tables')]",
+            "type": "Microsoft.DataFactory/factories/pipelines",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "activities": [
+                    {
+                        "name": "Get Folder Details",
+                        "type": "GetMetadata",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "dataset": {
+                                "referenceName": "ds__bronze_incremental",
+                                "type": "DatasetReference",
+                                "parameters": {
+                                    "p_month_end_date": {
+                                        "value": "@pipeline().parameters.p_month_end_date",
+                                        "type": "Expression"
+                                    }
+                                }
+                            },
+                            "fieldList": [
+                                "exists"
+                            ],
+                            "storeSettings": {
+                                "type": "AzureBlobFSReadSettings",
+                                "recursive": true,
+                                "enablePartitionDiscovery": false
+                            },
+                            "formatSettings": {
+                                "type": "JsonReadSettings"
+                            }
+                        }
+                    },
+                    {
+                        "name": "Files Existsed",
+                        "type": "IfCondition",
+                        "dependsOn": [
+                            {
+                                "activity": "Get Folder Details",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "userProperties": [],
+                        "typeProperties": {
+                            "expression": {
+                                "value": "@activity('Get Folder Details').output.exists",
+                                "type": "Expression"
+                            },
+                            "ifTrueActivities": [
+                                {
+                                    "name": "Create B-S Opportunity",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/incremental_objects/1.create_bronze_silver_tables_opportunity",
+                                        "baseParameters": {
+                                            "p_file_date": {
+                                                "value": "@formatDateTime(pipeline().parameters.p_month_end_date,'yyyy-MM-dd')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create B-S OpportunityLineItem",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/incremental_objects/2.create_bronze_silver_tables_opportunitylineitem",
+                                        "baseParameters": {
+                                            "p_file_date": {
+                                                "value": "@formatDateTime(pipeline().parameters.p_month_end_date,'yyyy-MM-dd')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create B-S Product",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/incremental_objects/3.create_bronze_silver_tables_product",
+                                        "baseParameters": {
+                                            "p_file_date": {
+                                                "value": "@formatDateTime(pipeline().parameters.p_month_end_date,'yyyy-MM-dd')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create B-S ServiceContract",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/incremental_objects/4.create_bronze_silver_tables_servicecontract",
+                                        "baseParameters": {
+                                            "p_file_date": {
+                                                "value": "@formatDateTime(pipeline().parameters.p_month_end_date,'yyyy-MM-dd')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                },
+                                {
+                                    "name": "Create B-S QuoteLine",
+                                    "type": "DatabricksNotebook",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.12:00:00",
+                                        "retry": 0,
+                                        "retryIntervalInSeconds": 30,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/ingestion/incremental_objects/5.create_bronze_silver_tables_quoteline",
+                                        "baseParameters": {
+                                            "p_file_date": {
+                                                "value": "@formatDateTime(pipeline().parameters.p_month_end_date,'yyyy-MM-dd')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "linkedServiceName": {
+                                        "referenceName": "ls_databricks",
+                                        "type": "LinkedServiceReference"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "policy": {
+                    "elapsedTimeMetric": {}
+                },
+                "parameters": {
+                    "p_month_end_date": {
+                        "type": "string"
+                    }
+                },
+                "annotations": [],
+                "lastPublishTime": "2024-09-10T06:32:39Z"
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/datasets/ds__bronze_incremental')]",
+                "[concat(variables('factoryId'), '/linkedServices/ls_databricks')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/pl_aggregation_gold_layer')]",
+            "type": "Microsoft.DataFactory/factories/pipelines",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "activities": [
+                    {
+                        "name": "Profit by Customer",
+                        "type": "DatabricksNotebook",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/aggregation/1.customer_profit"
+                        },
+                        "linkedServiceName": {
+                            "referenceName": "ls_databricks",
+                            "type": "LinkedServiceReference"
+                        }
+                    },
+                    {
+                        "name": "Product Sold",
+                        "type": "DatabricksNotebook",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/aggregation/2.product_sold"
+                        },
+                        "linkedServiceName": {
+                            "referenceName": "ls_databricks",
+                            "type": "LinkedServiceReference"
+                        }
+                    },
+                    {
+                        "name": "Projec Created",
+                        "type": "DatabricksNotebook",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/aggregation/3.project_created"
+                        },
+                        "linkedServiceName": {
+                            "referenceName": "ls_databricks",
+                            "type": "LinkedServiceReference"
+                        }
+                    },
+                    {
+                        "name": "Deals Win-Loss Ratio",
+                        "type": "DatabricksNotebook",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/aggregation/4.deal_win_loss_ratio"
+                        },
+                        "linkedServiceName": {
+                            "referenceName": "ls_databricks",
+                            "type": "LinkedServiceReference"
+                        }
+                    },
+                    {
+                        "name": "Cummulative Revenue",
+                        "type": "DatabricksNotebook",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "0.12:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "notebookPath": "/Users/databrickuser@bachprime144gmail.onmicrosoft.com/Azure-Databricks-Data-Engineer/aggregation/5.cummulative_revenue"
+                        },
+                        "linkedServiceName": {
+                            "referenceName": "ls_databricks",
+                            "type": "LinkedServiceReference"
+                        }
+                    }
+                ],
+                "policy": {
+                    "elapsedTimeMetric": {}
+                },
+                "parameters": {
+                    "p_month_end_date": {
+                        "type": "string"
+                    }
+                },
+                "annotations": [],
+                "lastPublishTime": "2024-09-10T23:03:21Z"
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/ls_databricks')]"
+            ]
+        },
+        {
+            "name": "[concat(parameters('factoryName'), '/pl_process_medallion_data')]",
+            "type": "Microsoft.DataFactory/factories/pipelines",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "activities": [
+                    {
+                        "name": "Execute Full Load",
+                        "type": "ExecutePipeline",
+                        "dependsOn": [],
+                        "policy": {
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "pipeline": {
+                                "referenceName": "pl_full_load_bronze_silver_tables",
+                                "type": "PipelineReference"
+                            },
+                            "waitOnCompletion": true,
+                            "parameters": {
+                                "p_month_end_date": {
+                                    "value": "@pipeline().parameters.p_month_end_date",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "Execute Incremental Load",
+                        "type": "ExecutePipeline",
+                        "dependsOn": [],
+                        "policy": {
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "pipeline": {
+                                "referenceName": "pl_incremental_load_bronze_silver_tables",
+                                "type": "PipelineReference"
+                            },
+                            "waitOnCompletion": true,
+                            "parameters": {
+                                "p_month_end_date": {
+                                    "value": "@pipeline().parameters.p_month_end_date",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "Execute Aggregated Metrics",
+                        "type": "ExecutePipeline",
+                        "dependsOn": [
+                            {
+                                "activity": "Execute Full Load",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            },
+                            {
+                                "activity": "Execute Incremental Load",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "policy": {
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "pipeline": {
+                                "referenceName": "pl_aggregation_gold_layer",
+                                "type": "PipelineReference"
+                            },
+                            "waitOnCompletion": true,
+                            "parameters": {
+                                "p_month_end_date": {
+                                    "value": "@pipeline().parameters.p_month_end_date",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "policy": {
+                    "elapsedTimeMetric": {}
+                },
+                "parameters": {
+                    "p_month_end_date": {
+                        "type": "string"
+                    }
+                },
+                "annotations": [],
+                "lastPublishTime": "2024-09-10T23:13:03Z"
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/pipelines/pl_full_load_bronze_silver_tables')]",
+                "[concat(variables('factoryId'), '/pipelines/pl_incremental_load_bronze_silver_tables')]",
+                "[concat(variables('factoryId'), '/pipelines/pl_aggregation_gold_layer')]"
+            ]
+        }
+    ]
+}
